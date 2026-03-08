@@ -1,50 +1,94 @@
 ﻿# Yandex Music Browser for Home Assistant
 
-Адаптированная версия интеграции `hass-yandex-music-browser`.
+> Engineering-ready fork of `hass-yandex-music-browser` with compatibility fixes for modern Home Assistant and AlexxIT YandexStation.
 
-## Оригинальный проект
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.1.3%2B-41BDF5)](#compatibility)
+[![YandexStation](https://img.shields.io/badge/AlexxIT-YandexStation-00A3FF)](https://github.com/AlexxIT/YandexStation)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-- Original: https://github.com/alryaz/hass-yandex-music-browser
+## Original Project
 
-## Что изменено в этой версии
+- Upstream repository: https://github.com/alryaz/hass-yandex-music-browser
 
-- Совместимость с `AlexxIT/YandexStation` (актуальная структура компонента).
-- Совместимость с `Home Assistant 2026.1.3`.
-- Обновлены устаревшие API Home Assistant:
-  - `MediaPlayerEntityFeature` вместо legacy `SUPPORT_*`.
-  - enum-типы `MediaType` и `MediaClass` с fallback-обработкой.
-  - актуальные типы `HomeAssistant` и сигнатуры setup/unload.
-- Обновлены метаданные интеграции:
-  - `manifest.json` -> `homeassistant: 2026.1.3`, `version: 0.1.0`.
-  - `hacs.json` -> `homeassistant: 2026.1.3`.
-- Обновлена зависимость `yandex-music` до `>=2.2.0`.
+## Compatibility
 
-## Требования
+- Home Assistant: `2026.1.3+`
+- Yandex Station integration: latest `AlexxIT/YandexStation`
+- Component type: `custom_component`
 
-- Home Assistant `2026.1.3` или новее.
-- Установленная интеграция `Yandex.Station`:
+## Keywords / Tags
+
+`home-assistant`, `hass`, `custom-component`, `yandex-music`, `yandex-station`, `media-browser`, `media-player`, `music`, `alexxit`, `integration`, `hacs`
+
+## What Is Implemented In This Fork
+
+- Updated HA API usage for 2026.x:
+  - `MediaPlayerEntityFeature` instead of legacy `SUPPORT_*`
+  - `MediaType` / `MediaClass` handling with enum fallbacks
+  - modern `HomeAssistant` typing and setup flow behavior
+- Updated patch loading to avoid blocking `import_module` inside event loop.
+- Fixed patch import paths and runtime behavior with current YandexStation internals.
+- Extended auth fallback chain:
+  - active YandexStation runtime sessions
+  - YandexStation config entries
+  - optional local credentials
+- Improved error behavior for media browse failures (clean `BrowseError` instead of opaque websocket failures).
+
+## Installation
+
+### Option 1: HACS
+
+1. Add this repository as `Integration` in HACS.
+2. Install `Yandex Music Browser`.
+3. Restart Home Assistant.
+4. Add the integration from UI:
+   - `Settings -> Devices & Services -> Add Integration`
+
+### Option 2: Manual
+
+1. Copy `custom_components/yandex_music_browser` into your HA config folder:
+   - `/config/custom_components/yandex_music_browser`
+2. Restart Home Assistant.
+3. Add integration in UI.
+
+## Requirements
+
+- Installed and configured `YandexStation` integration:
   - https://github.com/AlexxIT/YandexStation
+- Valid Yandex authentication context available through YandexStation.
 
-## Установка
+## Troubleshooting
 
-### Через HACS
+### Browser cannot authenticate
 
-1. Добавьте этот репозиторий в HACS как `Integration`.
-2. Установите интеграцию `Yandex Music Browser`.
-3. Перезапустите Home Assistant.
-4. Добавьте интеграцию через UI: `Settings -> Devices & Services -> Add Integration`.
+Check in this order:
 
-### Вручную
+1. YandexStation integration is loaded and authorized.
+2. At least one Yandex station entity is online and available in HA.
+3. After updates, Home Assistant was fully restarted.
+4. Integration files in `/config/custom_components/yandex_music_browser/` are from the same fork version.
 
-1. Скопируйте папку `custom_components/yandex_music_browser` в ваш конфиг Home Assistant.
-2. Перезапустите Home Assistant.
-3. Добавьте интеграцию через UI.
+### Still failing
 
-## Важно
+Collect and inspect logs for:
 
-- Для патча `yandex_station` интеграция `Yandex.Station` должна быть уже настроена и авторизована.
-- Без доступной авторизации в Yandex Music браузер не сможет получить токен.
+- `custom_components.yandex_music_browser`
+- `custom_components.yandex_music_browser.patches.yandex_station`
 
-## Статус
+## Architecture Notes
 
-Проект обновлен под текущие изменения в этом репозитории и предназначен как совместимая адаптация оригинальной работы `alryaz`.
+Main patch points:
+
+- `custom_components/yandex_music_browser/patches/yandex_station.py`
+- `custom_components/yandex_music_browser/patches/generic.py`
+- `custom_components/yandex_music_browser/default.py`
+
+## Acknowledgements
+
+- Original component author: `alryaz`
+- YandexStation ecosystem: `AlexxIT`
+- This fork adaptation and refactoring were implemented with AI assistance from **OpenAI Codex (GPT-5)**.
+
+## Status
+
+This repository is maintained as a practical compatibility fork focused on production usability with current Home Assistant builds.
