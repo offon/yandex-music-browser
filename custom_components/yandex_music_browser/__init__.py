@@ -278,8 +278,9 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
         for patch_installing, is_enabled in config.get(CONF_PATCHES, {}).items():
             if is_enabled is True or is_enabled is None:
                 try:
-                    patch_module = import_module(
-                        f"custom_components.{DOMAIN}.patches.{patch_installing}"
+                    patch_module = await hass.async_add_executor_job(
+                        import_module,
+                        f"custom_components.{DOMAIN}.patches.{patch_installing}",
                     )
                 except ImportError as e:
                     _LOGGER.error(f"Could not import patch {patch_installing}: {e}")

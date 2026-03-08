@@ -4,8 +4,9 @@ from typing import Optional, Union
 from homeassistant.components.media_player import BrowseError
 from homeassistant.core import HomeAssistant
 
-from custom_components.yandex_music_browser import ROOT_MEDIA_CONTENT_TYPE, YandexBrowseMedia
+from custom_components.yandex_music_browser.const import ROOT_MEDIA_CONTENT_TYPE
 from custom_components.yandex_music_browser.default import async_get_music_browser
+from custom_components.yandex_music_browser.media_browser import YandexBrowseMedia
 
 _LOGGER = logging.getLogger(__name__)
 
