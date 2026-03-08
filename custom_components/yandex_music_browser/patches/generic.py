@@ -27,6 +27,7 @@ from custom_components.yandex_music_browser.default import async_get_music_brows
 from custom_components.yandex_music_browser.media_browser import (
     YandexBrowseMedia,
     YandexMusicBrowser,
+    YandexMusicBrowserAuthenticationError,
     YandexMusicBrowserException,
 )
 from custom_components.yandex_music_browser.patches._base import _patch_root_async_browse_media
@@ -114,9 +115,12 @@ async def _patch_generic_async_browse_media(
 
     if media_content_type == "yandex":
         media_content_type, _, media_content_id = media_content_id.partition(":")
-        yandex_browse_object = await _patch_root_async_browse_media(
-            self, media_content_type, media_content_id, fetch_children=True
-        )
+        try:
+            yandex_browse_object = await _patch_root_async_browse_media(
+                self, media_content_type, media_content_id, fetch_children=True
+            )
+        except YandexMusicBrowserAuthenticationError as e:
+            raise BrowseError(str(e)) from e
         result_object = yandex_browse_object
 
     else:
@@ -141,9 +145,12 @@ async def _patch_generic_async_browse_media(
             and (result_object.media_content_id, result_object.media_content_type)
             == _root_browse_object_access
         ):
-            yandex_browse_object = await _patch_root_async_browse_media(
-                self, None, None, fetch_children=not result_object
-            )
+            try:
+                yandex_browse_object = await _patch_root_async_browse_media(
+                    self, None, None, fetch_children=not result_object
+                )
+            except YandexMusicBrowserAuthenticationError as e:
+                raise BrowseError(str(e)) from e
             if result_object:
                 self._root_browse_object_access = (
                     result_object.media_content_id,

@@ -256,6 +256,33 @@ async def async_authenticate(on: Union[HomeAssistant, "MediaPlayerEntity"]):
             except ImportError:
                 from custom_components.yandex_station import DATA_CONFIG, DOMAIN
 
+            # Stage 3.1: Try active YandexStation sessions from config entries
+            try:
+                domain_data = hass.data.get(DOMAIN, {})
+                for data_obj in domain_data.values():
+                    session = getattr(data_obj, "session", None)
+                    if session is None:
+                        continue
+
+                    music_token = getattr(session, "music_token", None)
+                    if music_token:
+                        return music_token
+
+                    x_token = getattr(session, "x_token", None)
+                    if x_token:
+                        try:
+                            music_token = await session.get_music_token(x_token)
+                        except BaseException as e:
+                            _LOGGER.error(
+                                "Could not authenticate using active Yandex Station session: %s",
+                                e,
+                            )
+                        else:
+                            session.music_token = music_token
+                            return music_token
+            except BaseException as e:
+                _LOGGER.error("Could not inspect Yandex Station active sessions: %s", e)
+
             try:
                 yandex_station_config = hass.data[DOMAIN][DATA_CONFIG]
             except KeyError:
