@@ -167,10 +167,15 @@ async def _patch_generic_async_browse_media(
         raise BrowseError("Could not find required object")
 
     if yandex_browse_object is not None:
+        try:
+            music_browser = await async_get_music_browser(self)
+        except YandexMusicBrowserAuthenticationError as e:
+            raise BrowseError(str(e)) from e
+
         await self.hass.async_add_executor_job(
             _update_browse_object_for_url,
             self.hass,
-            await async_get_music_browser(self),
+            music_browser,
             yandex_browse_object,
         )
 

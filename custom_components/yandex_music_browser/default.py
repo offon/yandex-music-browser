@@ -66,6 +66,46 @@ async def async_authenticate_using_config_credentials(hass: HomeAssistant) -> "C
     raise YandexMusicBrowserAuthenticationError("No credentials found to perform authentication")
 
 
+async def async_authenticate_using_yandex_station_data(hass: HomeAssistant) -> str:
+    """Get music token from installed Yandex Station integration."""
+    # Runtime objects in hass.data
+    try:
+        from custom_components.yandex_station.core.const import DOMAIN as YS_DOMAIN
+    except ImportError:
+        YS_DOMAIN = "yandex_station"
+
+    domain_data = hass.data.get(YS_DOMAIN, {})
+    for value in domain_data.values():
+        session = getattr(value, "session", None)
+        if session is None:
+            continue
+
+        music_token = getattr(session, "music_token", None)
+        if music_token:
+            return music_token
+
+        x_token = getattr(session, "x_token", None)
+        if x_token:
+            token = await session.get_music_token(x_token)
+            session.music_token = token
+            return token
+
+    # Stored config entries
+    for entry in hass.config_entries.async_entries(YS_DOMAIN):
+        data = entry.data
+        music_token = data.get("music_token")
+        if music_token:
+            return music_token
+
+        x_token = data.get("x_token")
+        if x_token:
+            return await async_get_music_token(x_token)
+
+    raise YandexMusicBrowserAuthenticationError(
+        "No Yandex Station token found in runtime objects or config entries"
+    )
+
+
 async def async_get_music_browser(
     entity: Union[MediaPlayerEntity, HomeAssistant]
 ) -> YandexMusicBrowser:
@@ -93,6 +133,12 @@ async def async_get_music_browser(
                     _LOGGER.error(f"Patch {patch} failed to authenticate: {e}")
 
             if authentication is None:
+                try:
+                    authentication = await async_authenticate_using_yandex_station_data(hass)
+                except BaseException as e:
+                    _LOGGER.error(f"Yandex Station authentication fallback failed: {e}")
+
+            if authentication is None:
                 # Fall back to default authentication methods
                 try:
                     authentication = await async_authenticate_using_config_credentials(hass)
@@ -114,6 +160,11 @@ async def async_get_music_browser(
             # Remove browser future
             hass.data[DATA_BROWSER] = None
             future_obj.set_exception(e)
+            # Consume exception to avoid "Future exception was never retrieved"
+            try:
+                future_obj.exception()
+            except BaseException:
+                pass
             raise
 
         else:

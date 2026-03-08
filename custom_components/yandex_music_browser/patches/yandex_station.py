@@ -232,7 +232,7 @@ async def async_authenticate(on: Union[HomeAssistant, "MediaPlayerEntity"]):
             except BaseException as e:
                 _LOGGER.error("Could not authenticate using Yandex Station entity: %s", e)
         else:
-            hass = on
+            hass = on.hass if isinstance(on, MediaPlayerEntity) else on
 
         # Stage 2: Authenticate using other entities
         if authentication is None:
