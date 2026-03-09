@@ -99,7 +99,7 @@ def _build_track_proxy_url(
         return None
 
     if track_name:
-        filename = quote(_sanitize_track_filename(track_name, media_id))
+        filename = _sanitize_track_filename(track_name, media_id)
         track_suffix = "/" + filename + ".mp3"
     else:
         track_suffix = "/track.mp3"
