@@ -16,7 +16,7 @@ from homeassistant.components.media_player import (
     MediaType,
 )
 from homeassistant.core import HomeAssistant
-from yandex_music import Artist, DownloadInfo, Playlist, Track, YandexMusicObject
+from yandex_music import Album, Artist, DownloadInfo, Playlist, Track, YandexMusicObject
 
 from custom_components.yandex_music_browser.const import (
     DATA_PLAY_KEY,
@@ -93,6 +93,46 @@ def _build_context_urls(
     ]
 
 
+def _build_track_context_from_album(track: Track) -> Optional[Tuple[List[str], int]]:
+    albums = getattr(track, "albums", None) or []
+    client = getattr(track, "client", None)
+    if client is None:
+        return None
+
+    for album_ref in albums:
+        album_id = getattr(album_ref, "id", None)
+        if album_id is None:
+            continue
+
+        try:
+            album_list = client.albums(album_ids=str(album_id))
+            if not album_list:
+                continue
+
+            album: Optional[Album] = album_list[0]
+            if album is None:
+                continue
+
+            album = album.with_tracks()
+            if not getattr(album, "volumes", None):
+                continue
+
+            track_ids: List[str] = []
+            for volume in album.volumes:
+                for item in volume:
+                    item_id = getattr(item, "id", None)
+                    if item_id is not None:
+                        track_ids.append(str(item_id))
+
+            track_id = str(getattr(track, "id", ""))
+            if len(track_ids) > 1 and track_id in track_ids:
+                return track_ids, track_ids.index(track_id)
+        except BaseException:
+            continue
+
+    return None
+
+
 async def _try_play_urls_via_mpd_queue(self: "MediaPlayerEntity", urls: Sequence[str]) -> bool:
     module = getattr(self.__class__, "__module__", "")
     if "homeassistant.components.mpd" not in module:
@@ -122,7 +162,7 @@ async def _patch_generic_async_play_media(
     media_type = getattr(media_type, "value", media_type)
     _LOGGER.debug("Generic async play media call: (%s) (%s) %s", media_type, media_id, kwargs)
     if media_type == "yandex":
-        _LOGGER.warning(
+        _LOGGER.debug(
             "Yandex Music Browser patched play invoked: entity=%s media_id=%s",
             getattr(self, "entity_id", "<unknown>"),
             media_id,
@@ -136,6 +176,18 @@ async def _patch_generic_async_play_media(
         if media_object:
             if isinstance(media_object, Track):
                 context = _get_track_context(self).get(str(media_object.id))
+                if context is None:
+                    context = await self.hass.async_add_executor_job(
+                        _build_track_context_from_album, media_object
+                    )
+                    if context:
+                        track_ids, _ = context
+                        _LOGGER.warning(
+                            "Track context built from album fallback: entity=%s tracks=%s",
+                            getattr(self, "entity_id", "<unknown>"),
+                            len(track_ids),
+                        )
+
                 if context:
                     track_ids, start_index = context
                     context_urls = _build_context_urls(self, track_ids, start_index)
@@ -151,6 +203,12 @@ async def _patch_generic_async_play_media(
                                 return
                         except BaseException as e:
                             _LOGGER.debug("Could not queue track context via MPD direct queue: %s", e)
+                else:
+                    _LOGGER.warning(
+                        "No playlist context for track playback: entity=%s track=%s",
+                        getattr(self, "entity_id", "<unknown>"),
+                        getattr(media_object, "id", "<unknown>"),
+                    )
 
             # Check if media object is supported for URL generation
             media_object_type = type(media_object)
