@@ -2,7 +2,7 @@ import logging
 import random
 import string
 from functools import wraps
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, Type, TypeVar, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, TypeVar, Union
 from urllib.parse import quote
 
 from aiohttp.abc import Request
@@ -40,6 +40,26 @@ MEDIA_TYPE_PLAYLIST = getattr(
 )
 
 
+async def _try_play_urls_via_mpd_queue(self: "MediaPlayerEntity", urls: Sequence[str]) -> bool:
+    module = getattr(self.__class__, "__module__", "")
+    if "homeassistant.components.mpd" not in module:
+        return False
+
+    connection = getattr(self, "connection", None)
+    client = getattr(self, "_client", None)
+    if connection is None or client is None:
+        return False
+
+    async with connection():
+        await client.clear()
+        for url in urls:
+            await client.add(url)
+        await client.play()
+
+    _LOGGER.debug("Queued %s tracks via MPD direct client queue", len(urls))
+    return True
+
+
 async def _patch_generic_async_play_media(
     self: "MediaPlayerEntity",
     media_type: Optional[str] = None,
@@ -75,6 +95,15 @@ async def _patch_generic_async_play_media(
                             if len(urls) == 1:
                                 media_id = urls[0]
                             else:
+                                try:
+                                    if await _try_play_urls_via_mpd_queue(self, urls):
+                                        return
+                                except BaseException as e:
+                                    _LOGGER.debug(
+                                        "Could not queue playlist URLs via MPD direct queue: %s",
+                                        e,
+                                    )
+
                                 play_media = object.__getattribute__(self, "async_play_media")
                                 enqueue_kwargs = dict(kwargs)
                                 try:
