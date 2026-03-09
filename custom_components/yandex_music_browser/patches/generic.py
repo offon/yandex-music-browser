@@ -1,5 +1,6 @@
 import logging
 import random
+import re
 import string
 from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type, TypeVar, Union
@@ -39,6 +40,7 @@ MEDIA_TYPE_PLAYLIST = getattr(
     getattr(MediaType, "PLAYLIST", "playlist"), "value", "playlist"
 )
 _TRACK_CONTEXT_ATTR = "_yandex_track_context"
+_TRACK_TITLES_ATTR = "_yandex_track_titles"
 _TRACK_CONTEXT_SEPARATOR = "|ctx="
 _TRACK_CONTEXT_MAX_ITEMS = 5000
 
@@ -51,9 +53,66 @@ def _get_track_context(self: "MediaPlayerEntity") -> Dict[str, Tuple[List[str], 
     return context
 
 
+def _get_track_titles(self: "MediaPlayerEntity") -> Dict[str, str]:
+    titles = getattr(self, _TRACK_TITLES_ATTR, None)
+    if titles is None or not isinstance(titles, dict):
+        titles = {}
+        setattr(self, _TRACK_TITLES_ATTR, titles)
+    return titles
+
+
 def _trim_track_context(context: Dict[str, Tuple[List[str], int]]) -> None:
     while len(context) > _TRACK_CONTEXT_MAX_ITEMS:
         context.pop(next(iter(context)))
+
+
+def _trim_track_titles(titles: Dict[str, str]) -> None:
+    while len(titles) > _TRACK_CONTEXT_MAX_ITEMS:
+        titles.pop(next(iter(titles)))
+
+
+def _sanitize_track_filename(value: Optional[str], fallback_track_id: str) -> str:
+    if not value:
+        return f"track-{fallback_track_id}"
+
+    filename = value.strip()
+    if not filename:
+        return f"track-{fallback_track_id}"
+
+    filename = re.sub(r'[\x00-\x1f<>:"/\\|?*]+', " ", filename)
+    filename = re.sub(r"\s+", " ", filename).strip().replace(" ", "_")
+    filename = filename.strip("._")
+    if len(filename) > 96:
+        filename = filename[:96].rstrip("._")
+
+    return filename or f"track-{fallback_track_id}"
+
+
+def _build_track_proxy_url(
+    hass: HomeAssistant,
+    media_type: str,
+    media_id: str,
+    track_name: Optional[str] = None,
+) -> Optional[str]:
+    base_url = hass.config.internal_url or hass.config.external_url
+    if base_url is None:
+        return None
+
+    if track_name:
+        filename = quote(_sanitize_track_filename(track_name, media_id))
+        track_suffix = "/" + filename + ".mp3"
+    else:
+        track_suffix = "/track.mp3"
+
+    return (
+        base_url
+        + YandexMusicBrowserView.url.format(
+            key=get_play_key(hass),
+            media_type=quote(media_type),
+            media_id=quote(media_id),
+        )
+        + track_suffix
+    )
 
 
 def _remember_track_context_from_browse(
@@ -63,6 +122,7 @@ def _remember_track_context_from_browse(
         return
 
     context = _get_track_context(self)
+    titles = _get_track_titles(self)
     stack = [browse_object]
     while stack:
         current = stack.pop()
@@ -75,7 +135,13 @@ def _remember_track_context_from_browse(
             child_type = getattr(child, "yandex_media_content_type", None)
             child_id = getattr(child, "yandex_media_content_id", None)
             if child_type == "track" and child_id:
-                track_ids.append(str(child_id))
+                track_id = str(child_id)
+                track_ids.append(track_id)
+
+                track_title = getattr(child, "title", None)
+                if isinstance(track_title, str) and track_title.strip():
+                    titles[track_id] = track_title.strip()
+                    _trim_track_titles(titles)
 
         if len(track_ids) > 1:
             for i, track_id in enumerate(track_ids):
@@ -88,17 +154,19 @@ def _remember_track_context_from_browse(
 def _build_context_urls(
     self: "MediaPlayerEntity", track_ids: Sequence[str], start_index: int
 ) -> Optional[List[str]]:
-    base_url = self.hass.config.internal_url or self.hass.config.external_url
-    if base_url is None:
-        return None
-
-    play_key = get_play_key(self.hass)
-    return [
-        base_url
-        + YandexMusicBrowserView.url.format(key=play_key, media_type="track", media_id=quote(track_id))
-        + "/track.mp3"
-        for track_id in track_ids[start_index:]
-    ]
+    titles = _get_track_titles(self)
+    urls: List[str] = []
+    for track_id in track_ids[start_index:]:
+        url = _build_track_proxy_url(
+            self.hass,
+            media_type="track",
+            media_id=track_id,
+            track_name=titles.get(track_id),
+        )
+        if url is None:
+            return None
+        urls.append(url)
+    return urls
 
 
 def _split_track_media_id(media_id: str) -> Tuple[str, Optional[Tuple[str, str]]]:
@@ -536,11 +604,19 @@ class YandexMusicBrowserView(HomeAssistantView):
     extra_urls = [
         url + "/playlist.m3u8",
         url + "/track.mp3",
+        url + "/{track_name}.mp3",
     ]
     name = "api:yandex_music_browser"
     requires_auth = False
 
-    async def get(self, request: Request, key: str, media_type: str, media_id: str) -> Response:
+    async def get(
+        self,
+        request: Request,
+        key: str,
+        media_type: str,
+        media_id: str,
+        track_name: Optional[str] = None,
+    ) -> Response:
         """Handle Yandex Smart Home HEAD requests."""
         hass: HomeAssistant = request.app[KEY_HASS]
 
@@ -616,12 +692,11 @@ def get_play_key(hass: HomeAssistant):
 
 
 def wrap_urls_container(
-    fn: Callable[[HomeAssistant, _TYandexMusicObject], Optional[Sequence[Tuple[str, str]]]]
+    fn: Callable[[HomeAssistant, _TYandexMusicObject], Optional[Sequence[Union[Tuple[str, str], Tuple[str, str, str]]]]]
 ):
     @wraps(fn)
     def _wrapped(hass: HomeAssistant, media_object: _TYandexMusicObject):
-        internal_url = hass.config.internal_url
-        if internal_url is None:
+        if hass.config.internal_url is None and hass.config.external_url is None:
             _LOGGER.debug("To use track containers, you must set your Home Assistant internal URL")
             return None
 
@@ -629,14 +704,24 @@ def wrap_urls_container(
         if items is None:
             return None
 
-        return [
-            hass.config.internal_url
-            + YandexMusicBrowserView.url.format(
-                key=get_play_key(hass), media_type=quote(type_), media_id=quote(id_)
+        urls = []
+        for item in items:
+            if len(item) == 3:
+                type_, id_, track_name = item
+            else:
+                type_, id_ = item
+                track_name = None
+
+            url = _build_track_proxy_url(
+                hass=hass,
+                media_type=type_,
+                media_id=id_,
+                track_name=track_name,
             )
-            + "/track.mp3"
-            for type_, id_ in items
-        ]
+            if url is not None:
+                urls.append(url)
+
+        return urls
 
     setattr(_wrapped, "_is_urls_container", True)
 
@@ -666,11 +751,32 @@ def get_track_play_url(
 def get_playlist_play_url(
     hass: HomeAssistant,
     media_object: Playlist,
-) -> Sequence[Tuple[str, str]]:
+) -> Sequence[Tuple[str, str, str]]:
     tracks = media_object.tracks
     if tracks is None:
         tracks = media_object.fetch_tracks()
-    return [("track", str(track.id)) for track in tracks]
+
+    items = []
+    for track in tracks:
+        track_id = str(track.id)
+        artists = []
+        try:
+            artists = track.artists_name() or []
+        except BaseException:
+            artists = []
+
+        title = str(getattr(track, "title", "") or "").strip()
+        artists_str = ", ".join(artists).strip()
+        if title and artists_str:
+            display_name = f"{artists_str} - {title}"
+        elif title:
+            display_name = title
+        else:
+            display_name = f"track-{track_id}"
+
+        items.append(("track", track_id, display_name))
+
+    return items
 
 
 def install(hass: HomeAssistant):

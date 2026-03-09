@@ -1,5 +1,6 @@
 import logging
 from typing import Optional, TYPE_CHECKING, Union
+from urllib.parse import urlparse
 
 from homeassistant.components.media_player import (
     MediaPlayerEntity,
@@ -34,6 +35,122 @@ MEDIA_TYPE_PLAYLIST = getattr(
 MEDIA_TYPE_TRACK = getattr(getattr(MediaType, "TRACK", "track"), "value", "track")
 
 
+def _first_non_empty(*values):
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+            continue
+        if value:
+            return value
+    return None
+
+
+def _normalize_artwork_url(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+
+    value = str(url).strip().replace("%%", "400x400")
+    if not value:
+        return None
+
+    if value.startswith("//"):
+        return "https:" + value
+
+    parsed = urlparse(value)
+    if parsed.scheme:
+        return value
+
+    if "." in value and not value.startswith("/"):
+        return "https://" + value
+
+    return value
+
+
+def _extract_artist_name(value) -> Optional[str]:
+    if isinstance(value, str):
+        return value.strip() or None
+
+    if isinstance(value, dict):
+        return _first_non_empty(value.get("name"), value.get("title"), value.get("artist"))
+
+    if isinstance(value, list):
+        names = []
+        for item in value:
+            name = _extract_artist_name(item)
+            if name:
+                names.append(name)
+        if names:
+            return ", ".join(names)
+    return None
+
+
+def _extract_metadata_from_attrs(attrs: dict) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    containers = [attrs]
+    for key in (
+        "media_extra",
+        "media_info",
+        "mediaData",
+        "metadata",
+        "player_state",
+        "track",
+        "current_track",
+    ):
+        value = attrs.get(key)
+        if isinstance(value, dict):
+            containers.append(value)
+
+    title = None
+    artist = None
+    image_url = None
+
+    for container in containers:
+        if title is None:
+            title = _first_non_empty(
+                container.get("media_title"),
+                container.get("title"),
+                container.get("track_title"),
+                container.get("track"),
+                container.get("name"),
+            )
+
+        if artist is None:
+            artist = _first_non_empty(
+                container.get("media_artist"),
+                _extract_artist_name(container.get("artist")),
+                _extract_artist_name(container.get("artists")),
+                container.get("subtitle"),
+            )
+
+        if image_url is None:
+            image_url = _first_non_empty(
+                container.get("media_image_url"),
+                container.get("entity_picture"),
+                container.get("image"),
+                container.get("thumbnail"),
+                container.get("cover"),
+                container.get("cover_uri"),
+                container.get("coverUri"),
+                container.get("album_cover_uri"),
+            )
+
+    return title, artist, _normalize_artwork_url(image_url)
+
+
+def _get_current_track_metadata(self: "YandexStation") -> tuple[Optional[str], Optional[str], Optional[str]]:
+    try:
+        attrs = object.__getattribute__(self, "extra_state_attributes")
+    except BaseException:
+        attrs = None
+
+    if isinstance(attrs, dict):
+        return _extract_metadata_from_attrs(attrs)
+    return None, None, None
+
+
 @callback
 def _get_yandex_entities():
     from custom_components.yandex_station.media_player import YandexStation
@@ -55,6 +172,18 @@ def _patch_yandex_station_get_attribute(self, attr: str):
         supported_features |= MediaPlayerEntityFeature.BROWSE_MEDIA
 
         return supported_features
+
+    elif attr in ("media_title", "media_artist", "media_image_url", "entity_picture"):
+        original = object.__getattribute__(self, attr)
+        if original:
+            return original
+
+        title, artist, image_url = _get_current_track_metadata(self)
+        if attr == "media_title":
+            return title
+        if attr == "media_artist":
+            return artist
+        return image_url
 
     elif attr == "async_play_media":
         return _patch_yandex_station_async_play_media.__get__(self, self.__class__)
