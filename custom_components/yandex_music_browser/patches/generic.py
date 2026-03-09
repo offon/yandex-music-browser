@@ -39,6 +39,7 @@ MEDIA_TYPE_PLAYLIST = getattr(
     getattr(MediaType, "PLAYLIST", "playlist"), "value", "playlist"
 )
 _TRACK_CONTEXT_ATTR = "_yandex_track_context"
+_TRACK_CONTEXT_SEPARATOR = "|ctx="
 
 
 def _get_track_context(self: "MediaPlayerEntity") -> Dict[str, Tuple[List[str], int]]:
@@ -91,6 +92,40 @@ def _build_context_urls(
         + "/track.mp3"
         for track_id in track_ids[start_index:]
     ]
+
+
+def _split_track_media_id(media_id: str) -> Tuple[str, Optional[Tuple[str, str]]]:
+    if _TRACK_CONTEXT_SEPARATOR not in media_id:
+        return media_id, None
+
+    track_id, context_ref = media_id.split(_TRACK_CONTEXT_SEPARATOR, 1)
+    if ":" not in context_ref:
+        return track_id, None
+
+    context_type, context_id = context_ref.split(":", 1)
+    if not context_type or not context_id:
+        return track_id, None
+
+    return track_id, (context_type, context_id)
+
+
+def _extract_track_ids_from_browse(browse_object: Optional[YandexBrowseMedia]) -> List[str]:
+    if browse_object is None:
+        return []
+
+    track_ids: List[str] = []
+    stack = [browse_object]
+    while stack:
+        current = stack.pop()
+        children = list(getattr(current, "children", []) or [])
+        for child in children:
+            child_type = getattr(child, "yandex_media_content_type", None)
+            child_id = getattr(child, "yandex_media_content_id", None)
+            if child_type == "track" and child_id is not None:
+                track_ids.append(str(child_id))
+        stack.extend(children)
+
+    return track_ids
 
 
 def _build_track_context_from_album(track: Track) -> Optional[Tuple[List[str], int]]:
@@ -168,6 +203,9 @@ async def _patch_generic_async_play_media(
             media_id,
         )
         media_type, _, media_id = media_id.partition(":")
+        track_context_ref: Optional[Tuple[str, str]] = None
+        if media_type == "track":
+            media_id, track_context_ref = _split_track_media_id(media_id)
 
         _LOGGER.debug("Willing to play Yandex Media: %s - %s", media_type, media_id)
         browse_object = await _patch_root_async_browse_media(self, media_type, media_id)
@@ -176,6 +214,25 @@ async def _patch_generic_async_play_media(
         if media_object:
             if isinstance(media_object, Track):
                 context = _get_track_context(self).get(str(media_object.id))
+                if context is None and track_context_ref is not None:
+                    context_type, context_id = track_context_ref
+                    try:
+                        context_browse = await _patch_root_async_browse_media(
+                            self, context_type, context_id, fetch_children=True
+                        )
+                        context_track_ids = _extract_track_ids_from_browse(context_browse)
+                        track_id = str(media_object.id)
+                        if len(context_track_ids) > 1 and track_id in context_track_ids:
+                            context = (context_track_ids, context_track_ids.index(track_id))
+                            _LOGGER.warning(
+                                "Track context restored from media_id: entity=%s type=%s tracks=%s",
+                                getattr(self, "entity_id", "<unknown>"),
+                                context_type,
+                                len(context_track_ids),
+                            )
+                    except BaseException as e:
+                        _LOGGER.debug("Could not restore track context from media_id: %s", e)
+
                 if context is None:
                     context = await self.hass.async_add_executor_job(
                         _build_track_context_from_album, media_object
@@ -415,16 +472,28 @@ def _update_browse_object_for_url(
     hass: HomeAssistant,
     music_browser: "YandexMusicBrowser",
     browse_object: YandexBrowseMedia,
+    parent_track_context: Optional[Tuple[str, str]] = None,
 ) -> YandexBrowseMedia:
     browse_object.media_content_type = "yandex"
-    browse_object.media_content_id = (
-        browse_object.yandex_media_content_type + ":" + browse_object.yandex_media_content_id
-    )
+    yandex_type = browse_object.yandex_media_content_type
+    yandex_id = browse_object.yandex_media_content_id
+    browse_object.media_content_id = yandex_type + ":" + yandex_id
+
+    current_track_context = parent_track_context
+    if yandex_type in ("playlist", "album", "user_liked_tracks"):
+        current_track_context = (yandex_type, yandex_id)
+    elif yandex_type == "track" and parent_track_context is not None:
+        context_type, context_id = parent_track_context
+        browse_object.media_content_id += (
+            _TRACK_CONTEXT_SEPARATOR + context_type + ":" + context_id
+        )
 
     if browse_object.children:
         browse_object.children = list(
             map(
-                lambda x: _update_browse_object_for_url(hass, music_browser, x),
+                lambda x: _update_browse_object_for_url(
+                    hass, music_browser, x, current_track_context
+                ),
                 browse_object.children,
             )
         )
