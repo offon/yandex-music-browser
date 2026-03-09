@@ -40,6 +40,7 @@ MEDIA_TYPE_PLAYLIST = getattr(
 )
 _TRACK_CONTEXT_ATTR = "_yandex_track_context"
 _TRACK_CONTEXT_SEPARATOR = "|ctx="
+_TRACK_CONTEXT_MAX_ITEMS = 5000
 
 
 def _get_track_context(self: "MediaPlayerEntity") -> Dict[str, Tuple[List[str], int]]:
@@ -48,6 +49,11 @@ def _get_track_context(self: "MediaPlayerEntity") -> Dict[str, Tuple[List[str], 
         context = {}
         setattr(self, _TRACK_CONTEXT_ATTR, context)
     return context
+
+
+def _trim_track_context(context: Dict[str, Tuple[List[str], int]]) -> None:
+    while len(context) > _TRACK_CONTEXT_MAX_ITEMS:
+        context.pop(next(iter(context)))
 
 
 def _remember_track_context_from_browse(
@@ -74,6 +80,7 @@ def _remember_track_context_from_browse(
         if len(track_ids) > 1:
             for i, track_id in enumerate(track_ids):
                 context[track_id] = (track_ids, i)
+            _trim_track_context(context)
 
         stack.extend(children)
 
@@ -171,36 +178,20 @@ def _build_track_context_from_album(track: Track) -> Optional[Tuple[List[str], i
 async def _try_play_urls_via_mpd_queue(self: "MediaPlayerEntity", urls: Sequence[str]) -> bool:
     module = getattr(self.__class__, "__module__", "")
     if "homeassistant.components.mpd" not in module:
-        _LOGGER.debug("TRACE_MPD_01 entity=%s module=%s not_mpd", getattr(self, "entity_id", "?"), module)
         return False
 
     connection = getattr(self, "connection", None)
     client = getattr(self, "_client", None)
     if connection is None or client is None:
-        _LOGGER.warning(
-            "TRACE_MPD_02 entity=%s missing connection/client connection=%s client=%s",
-            getattr(self, "entity_id", "?"),
-            connection is not None,
-            client is not None,
-        )
         return False
 
-    _LOGGER.warning(
-        "TRACE_MPD_03 entity=%s queue_start tracks=%s",
-        getattr(self, "entity_id", "?"),
-        len(urls),
-    )
     async with connection():
         await client.clear()
         for url in urls:
             await client.add(url)
         await client.play()
 
-    _LOGGER.warning(
-        "TRACE_MPD_04 entity=%s queue_done tracks=%s",
-        getattr(self, "entity_id", "?"),
-        len(urls),
-    )
+    _LOGGER.debug("Queued %s tracks via MPD direct client queue", len(urls))
     return True
 
 
@@ -213,53 +204,23 @@ async def _patch_generic_async_play_media(
     media_type = getattr(media_type, "value", media_type)
     _LOGGER.debug("Generic async play media call: (%s) (%s) %s", media_type, media_id, kwargs)
     if media_type == "yandex":
-        _LOGGER.warning(
-            "TRACE_PLAY_01 patched_play entity=%s media_id=%s kwargs=%s",
+        _LOGGER.debug(
+            "Yandex Music Browser patched play invoked: entity=%s media_id=%s",
             getattr(self, "entity_id", "<unknown>"),
             media_id,
-            kwargs,
         )
         media_type, _, media_id = media_id.partition(":")
         track_context_ref: Optional[Tuple[str, str]] = None
         if media_type == "track":
             media_id, track_context_ref = _split_track_media_id(media_id)
-        _LOGGER.warning(
-            "TRACE_PLAY_02 parsed entity=%s media_type=%s media_id=%s context_ref=%s",
-            getattr(self, "entity_id", "<unknown>"),
-            media_type,
-            media_id,
-            track_context_ref,
-        )
 
         _LOGGER.debug("Willing to play Yandex Media: %s - %s", media_type, media_id)
-        try:
-            browse_object = await _patch_root_async_browse_media(self, media_type, media_id)
-        except BaseException as e:
-            _LOGGER.error(
-                "TRACE_PLAY_03 browse_failed entity=%s media_type=%s media_id=%s err=%s",
-                getattr(self, "entity_id", "<unknown>"),
-                media_type,
-                media_id,
-                e,
-                exc_info=True,
-            )
-            raise
+        browse_object = await _patch_root_async_browse_media(self, media_type, media_id)
         media_object = getattr(browse_object, "media_object", None)
-        _LOGGER.warning(
-            "TRACE_PLAY_04 browse_ok entity=%s media_object=%s",
-            getattr(self, "entity_id", "<unknown>"),
-            type(media_object).__name__ if media_object is not None else None,
-        )
 
         if media_object:
             if isinstance(media_object, Track):
                 context = _get_track_context(self).get(str(media_object.id))
-                _LOGGER.warning(
-                    "TRACE_TRACK_01 context_lookup entity=%s track=%s has_context=%s",
-                    getattr(self, "entity_id", "<unknown>"),
-                    getattr(media_object, "id", None),
-                    context is not None,
-                )
                 if context is None and track_context_ref is not None:
                     context_type, context_id = track_context_ref
                     try:
@@ -277,11 +238,7 @@ async def _patch_generic_async_play_media(
                                 len(context_track_ids),
                             )
                     except BaseException as e:
-                        _LOGGER.warning(
-                            "TRACE_TRACK_02 restore_from_media_id_failed entity=%s err=%s",
-                            getattr(self, "entity_id", "<unknown>"),
-                            e,
-                        )
+                        _LOGGER.debug("Could not restore track context from media_id: %s", e)
 
                 if context is None:
                     context = await self.hass.async_add_executor_job(
@@ -297,23 +254,12 @@ async def _patch_generic_async_play_media(
 
                 if context:
                     track_ids, start_index = context
-                    _LOGGER.warning(
-                        "TRACE_TRACK_03 context_ready entity=%s total=%s start_index=%s",
-                        getattr(self, "entity_id", "<unknown>"),
-                        len(track_ids),
-                        start_index,
-                    )
                     context_urls = _build_context_urls(self, track_ids, start_index)
                     if not context_urls:
                         _LOGGER.warning(
                             "Cannot build queue URLs: set internal_url/external_url in HA network settings"
                         )
                     elif len(context_urls) > 1:
-                        _LOGGER.warning(
-                            "TRACE_TRACK_04 queue_attempt entity=%s urls=%s",
-                            getattr(self, "entity_id", "<unknown>"),
-                            len(context_urls),
-                        )
                         try:
                             if await _try_play_urls_via_mpd_queue(self, context_urls):
                                 _LOGGER.warning(
@@ -324,12 +270,7 @@ async def _patch_generic_async_play_media(
                                 )
                                 return
                         except BaseException as e:
-                            _LOGGER.error(
-                                "TRACE_TRACK_05 queue_failed entity=%s err=%s",
-                                getattr(self, "entity_id", "<unknown>"),
-                                e,
-                                exc_info=True,
-                            )
+                            _LOGGER.debug("Could not queue track context via MPD direct queue: %s", e)
                         _LOGGER.warning(
                             "Track context queue fallback to single track: MPD direct queue unsupported for entity=%s",
                             getattr(self, "entity_id", "<unknown>"),
@@ -344,23 +285,13 @@ async def _patch_generic_async_play_media(
             # Check if media object is supported for URL generation
             media_object_type = type(media_object)
             if media_object_type in URL_ITEM_VALIDATORS:
-                _LOGGER.warning(
-                    "TRACE_PLAY_05 validator_found entity=%s object_type=%s",
-                    getattr(self, "entity_id", "<unknown>"),
-                    media_object_type.__name__,
-                )
-
                 # Retrieve URL parser
                 getter, _ = URL_ITEM_VALIDATORS[media_object_type]
                 media_id = None
                 media_type = MEDIA_TYPE_MUSIC
                 if getattr(getter, "_is_urls_container", False):
-                    _LOGGER.warning(
-                        "TRACE_PLAY_06 urls_container entity=%s",
-                        getattr(self, "entity_id", "<unknown>"),
-                    )
-                    internal_url = self.hass.config.internal_url
-                    if internal_url is not None:
+                    base_url = self.hass.config.internal_url or self.hass.config.external_url
+                    if base_url is not None:
                         urls = await self.hass.async_add_executor_job(getter, self.hass, media_object)
                         if isinstance(urls, str):
                             media_id = urls
@@ -369,11 +300,6 @@ async def _patch_generic_async_play_media(
                             if len(urls) == 1:
                                 media_id = urls[0]
                             else:
-                                _LOGGER.warning(
-                                    "TRACE_PLAY_07 playlist_queue_attempt entity=%s urls=%s",
-                                    getattr(self, "entity_id", "<unknown>"),
-                                    len(urls),
-                                )
                                 try:
                                     if await _try_play_urls_via_mpd_queue(self, urls):
                                         _LOGGER.warning(
@@ -383,11 +309,9 @@ async def _patch_generic_async_play_media(
                                         )
                                         return
                                 except BaseException as e:
-                                    _LOGGER.error(
-                                        "TRACE_PLAY_08 playlist_queue_failed entity=%s err=%s",
-                                        getattr(self, "entity_id", "<unknown>"),
+                                    _LOGGER.debug(
+                                        "Could not queue playlist URLs via MPD direct queue: %s",
                                         e,
-                                        exc_info=True,
                                     )
 
                                 play_media = object.__getattribute__(self, "async_play_media")
@@ -412,20 +336,14 @@ async def _patch_generic_async_play_media(
                                     )
                                     return
                                 except BaseException as e:
-                                    _LOGGER.error(
-                                        "TRACE_PLAY_09 enqueue_fallback_failed entity=%s err=%s",
-                                        getattr(self, "entity_id", "<unknown>"),
+                                    _LOGGER.debug(
+                                        "Could not queue playlist URLs directly, falling back to m3u8: %s",
                                         e,
-                                        exc_info=True,
                                     )
 
                         if media_id is None:
-                            _LOGGER.warning(
-                                "TRACE_PLAY_10 m3u8_fallback entity=%s",
-                                getattr(self, "entity_id", "<unknown>"),
-                            )
                             media_id = (
-                                internal_url
+                                base_url
                                 + YandexMusicBrowserView.url.format(
                                     key=get_play_key(self.hass),
                                     media_type=quote(browse_object.yandex_media_content_type),
@@ -440,19 +358,10 @@ async def _patch_generic_async_play_media(
                     media_id = await self.hass.async_add_executor_job(
                         getter, self.hass, media_object
                     )
-                    _LOGGER.warning(
-                        "TRACE_PLAY_11 direct_url entity=%s has_media_id=%s",
-                        getattr(self, "entity_id", "<unknown>"),
-                        bool(media_id),
-                    )
 
                 if media_id:
                     # Redirect
-                    _LOGGER.warning(
-                        "TRACE_PLAY_12 redirect entity=%s media_type=%s",
-                        getattr(self, "entity_id", "<unknown>"),
-                        media_type,
-                    )
+                    _LOGGER.debug("Retrieved URL: %s", media_id)
                     return await object.__getattribute__(self, "async_play_media")(
                         media_id=media_id,
                         media_type=media_type,
