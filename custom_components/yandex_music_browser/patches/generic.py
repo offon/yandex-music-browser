@@ -38,6 +38,59 @@ MEDIA_TYPE_MUSIC = getattr(getattr(MediaType, "MUSIC", "music"), "value", "music
 MEDIA_TYPE_PLAYLIST = getattr(
     getattr(MediaType, "PLAYLIST", "playlist"), "value", "playlist"
 )
+_TRACK_CONTEXT_ATTR = "_yandex_track_context"
+
+
+def _get_track_context(self: "MediaPlayerEntity") -> Dict[str, Tuple[List[str], int]]:
+    context = getattr(self, _TRACK_CONTEXT_ATTR, None)
+    if context is None or not isinstance(context, dict):
+        context = {}
+        setattr(self, _TRACK_CONTEXT_ATTR, context)
+    return context
+
+
+def _remember_track_context_from_browse(
+    self: "MediaPlayerEntity", browse_object: Optional[YandexBrowseMedia]
+) -> None:
+    if browse_object is None:
+        return
+
+    context = _get_track_context(self)
+    stack = [browse_object]
+    while stack:
+        current = stack.pop()
+        children = list(getattr(current, "children", []) or [])
+        if not children:
+            continue
+
+        track_ids: List[str] = []
+        for child in children:
+            child_type = getattr(child, "yandex_media_content_type", None)
+            child_id = getattr(child, "yandex_media_content_id", None)
+            if child_type == "track" and child_id:
+                track_ids.append(str(child_id))
+
+        if len(track_ids) > 1:
+            for i, track_id in enumerate(track_ids):
+                context[track_id] = (track_ids, i)
+
+        stack.extend(children)
+
+
+def _build_context_urls(
+    self: "MediaPlayerEntity", track_ids: Sequence[str], start_index: int
+) -> Optional[List[str]]:
+    internal_url = self.hass.config.internal_url
+    if internal_url is None:
+        return None
+
+    play_key = get_play_key(self.hass)
+    return [
+        internal_url
+        + YandexMusicBrowserView.url.format(key=play_key, media_type="track", media_id=quote(track_id))
+        + "/track.mp3"
+        for track_id in track_ids[start_index:]
+    ]
 
 
 async def _try_play_urls_via_mpd_queue(self: "MediaPlayerEntity", urls: Sequence[str]) -> bool:
@@ -81,6 +134,24 @@ async def _patch_generic_async_play_media(
         media_object = getattr(browse_object, "media_object", None)
 
         if media_object:
+            if isinstance(media_object, Track):
+                context = _get_track_context(self).get(str(media_object.id))
+                if context:
+                    track_ids, start_index = context
+                    context_urls = _build_context_urls(self, track_ids, start_index)
+                    if context_urls and len(context_urls) > 1:
+                        try:
+                            if await _try_play_urls_via_mpd_queue(self, context_urls):
+                                _LOGGER.warning(
+                                    "Queued track context via MPD direct queue: entity=%s tracks=%s start_index=%s",
+                                    getattr(self, "entity_id", "<unknown>"),
+                                    len(context_urls),
+                                    start_index,
+                                )
+                                return
+                        except BaseException as e:
+                            _LOGGER.debug("Could not queue track context via MPD direct queue: %s", e)
+
             # Check if media object is supported for URL generation
             media_object_type = type(media_object)
             if media_object_type in URL_ITEM_VALIDATORS:
@@ -253,6 +324,7 @@ async def _patch_generic_async_browse_media(
             music_browser,
             yandex_browse_object,
         )
+        _remember_track_context_from_browse(self, yandex_browse_object)
 
     return result_object
 
