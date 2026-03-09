@@ -69,6 +69,11 @@ async def _patch_generic_async_play_media(
     media_type = getattr(media_type, "value", media_type)
     _LOGGER.debug("Generic async play media call: (%s) (%s) %s", media_type, media_id, kwargs)
     if media_type == "yandex":
+        _LOGGER.warning(
+            "Yandex Music Browser patched play invoked: entity=%s media_id=%s",
+            getattr(self, "entity_id", "<unknown>"),
+            media_id,
+        )
         media_type, _, media_id = media_id.partition(":")
 
         _LOGGER.debug("Willing to play Yandex Media: %s - %s", media_type, media_id)
@@ -97,6 +102,11 @@ async def _patch_generic_async_play_media(
                             else:
                                 try:
                                     if await _try_play_urls_via_mpd_queue(self, urls):
+                                        _LOGGER.warning(
+                                            "Queued playlist via MPD direct queue: entity=%s tracks=%s",
+                                            getattr(self, "entity_id", "<unknown>"),
+                                            len(urls),
+                                        )
                                         return
                                 except BaseException as e:
                                     _LOGGER.debug(
@@ -119,6 +129,11 @@ async def _patch_generic_async_play_media(
                                             media_id=url,
                                             **enqueue_kwargs,
                                         )
+                                    _LOGGER.warning(
+                                        "Queued playlist via enqueue fallback: entity=%s tracks=%s",
+                                        getattr(self, "entity_id", "<unknown>"),
+                                        len(urls),
+                                    )
                                     return
                                 except BaseException as e:
                                     _LOGGER.debug(
