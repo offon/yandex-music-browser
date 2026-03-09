@@ -67,16 +67,47 @@ async def _patch_generic_async_play_media(
                 if getattr(getter, "_is_urls_container", False):
                     internal_url = self.hass.config.internal_url
                     if internal_url is not None:
-                        media_id = (
-                            internal_url
-                            + YandexMusicBrowserView.url.format(
-                                key=get_play_key(self.hass),
-                                media_type=quote(browse_object.yandex_media_content_type),
-                                media_id=quote(browse_object.yandex_media_content_id),
+                        urls = await self.hass.async_add_executor_job(getter, self.hass, media_object)
+                        if isinstance(urls, str):
+                            media_id = urls
+                        elif urls:
+                            urls = list(urls)
+                            if len(urls) == 1:
+                                media_id = urls[0]
+                            else:
+                                play_media = object.__getattribute__(self, "async_play_media")
+                                enqueue_kwargs = dict(kwargs)
+                                try:
+                                    await play_media(
+                                        media_type=MEDIA_TYPE_MUSIC,
+                                        media_id=urls[0],
+                                        **kwargs,
+                                    )
+                                    enqueue_kwargs["enqueue"] = "add"
+                                    for url in urls[1:]:
+                                        await play_media(
+                                            media_type=MEDIA_TYPE_MUSIC,
+                                            media_id=url,
+                                            **enqueue_kwargs,
+                                        )
+                                    return
+                                except BaseException as e:
+                                    _LOGGER.debug(
+                                        "Could not queue playlist URLs directly, falling back to m3u8: %s",
+                                        e,
+                                    )
+
+                        if media_id is None:
+                            media_id = (
+                                internal_url
+                                + YandexMusicBrowserView.url.format(
+                                    key=get_play_key(self.hass),
+                                    media_type=quote(browse_object.yandex_media_content_type),
+                                    media_id=quote(browse_object.yandex_media_content_id),
+                                )
+                                + "/playlist.m3u8"
                             )
-                            + "/playlist.m3u8"
-                        )
-                        media_type = MEDIA_TYPE_PLAYLIST
+                            media_type = MEDIA_TYPE_PLAYLIST
 
                 else:
                     # Allow playback only if no test is provided, or preliminary test succeeds
